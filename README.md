@@ -26,9 +26,10 @@ SSH to the HMC and login as your account.   Then type "source eezh".   You will 
 - New commands:
   - sriovlsfirm - list SRIOV firmware, driver and frame update availability.
 - Commands in the works:
-  - sriovlsadapter
-  - sriovlsphysport
-  - sriovlslogport
+  - sriovlsadapter (99%)
+  - sriovlsphysport (50%) Which fields should we use?
+  - sriovlslogport (0%)
+ - Please send feedback and suggestions; contact email below.
 
 
 ## About the author / Contacting the author
