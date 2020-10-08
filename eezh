@@ -1,0 +1,851 @@
+# EEZH
+#
+# Copyright 2020 Matthew Opoka
+# version 2.0 - 2020/09/29
+# Copyright 2012, 2013 Brian Smith 
+# version 1.2 - 12/15/13
+eezhver="2.0"
+#
+# Thanks to Jim Suto for code contributions (10/25/12)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+body() {
+    IFS= read -r header
+    printf '%s\n' "$header"
+    "$@"
+}
+
+prompt () {
+	unset var
+	while [ -z "$var" ]; do
+		printf "$1: "
+		read var
+		eval $2=\"$var\"
+	done
+}
+
+wc () { [ "$1" == "-l" ] && sed -n '$='; }
+
+vi () { rnvi -f "$1"; }
+
+.  () { source "$1";  }
+
+df () { monhmc -n 0 -r disk; }
+
+lsuser () { lshmcusr; }
+
+hostname () { lshmc -n -F hostname; }
+
+passwd () {
+	if [ -n "$1" ]; then
+		user="$1"
+	else 
+		user="`whoami`"
+	fi
+	runandecho chhmcusr -u $user -t passwd
+}
+
+ps () { 
+	echo -e "pid             process\n"
+	for proc in `ls -d /proc/[0-9]* | sed 's/\/proc\///g'`; do 
+		printf "%-10s" $proc; cat /proc/$proc/status | grep Name | sed 's/Name://g'
+	done
+}
+
+uptime () { 
+	printf "From /proc/uptime:  up "
+	echo -n $(( $(printf "%.0f" "$(cat /proc/uptime | cut -d " " -f 1)") / 60 / 60 / 24))
+	printf " days\n\n"
+	echo "From who -b:"  `who -b`
+}
+
+free () { monhmc -r mem -n 0; monhmc -r swap -n 0; }
+
+checklpar () {
+	count=0; 
+	if [ -n "$2" ]; then
+		while read system; do 
+			while read l; do 
+				if [ "$l" = "$2" ] ; then 
+					count=$((count +1))
+				fi 
+			done < <(lssyscfg -m "$system" -r lpar -F name)
+		done < <(lssyscfg -r sys -F "name,state" | egrep "Standby|Operating" | cut -d, -f 1)
+		l=""
+		if [ $count -eq 0 ]; then 
+			echo "ERROR:  LPAR not found: $2"
+			return 1
+		fi 
+		if [ $count -gt 1 ]; then 
+			echo "ERROR:  Multiple LPAR's with same name $2"
+			return 2
+		fi
+	else
+		unset input
+		unset lpararray
+		unset cmd
+		echo "Select LPAR: "
+		while read system; do
+                        case $1 in
+                             on)
+                               cmd='lssyscfg -m "$system" -r lpar -F name,state | grep "Running" | cut -d, -f 1 | sort'
+                              ;;
+                             off)
+                               cmd='lssyscfg -m "$system" -r lpar -F name,state | grep "Not" | cut -d, -f 1 | sort'
+                              ;;
+                             *)
+                               cmd='lssyscfg -m "$system" -r lpar -F name | sort'
+                              ;;
+                        esac
+			while read l; do
+				count=$((count +1))
+				printf "%5s.  %-20s %-20s\n" $count "$l" "`lssyscfg -r lpar -m \"$system\" -F state --filter lpar_names=\"$l\"`"
+				lpararray[$count]="$l"
+			done < <( eval $cmd)
+		done < <(lssyscfg -r sys -F "name,state" | egrep "Standby|Operating" | cut -d, -f 1 | sort)
+		echo
+		while [ -z "${lpararray[$input]}" ]; do
+			printf "Enter LPAR number (1-$count, \"q\" to quit): ";
+			read input
+			if [ "$input" = "q" -o "$input" = "Q" ]; then return 1; fi
+		done
+		lpar="${lpararray[$input]}"
+		checklpar all "$lpar" || return 2
+	fi
+}
+
+checkframe () {
+	if [ -n "$1" ]; then
+		count=0; 
+		while read system; do 
+			if [ "$system" = "$1" ] ; then 
+				count=$((count +1))
+			fi 
+		done < <(lssyscfg -r sys -F "name")
+		if [ $count -eq 0 ]; then 
+			echo "ERROR:  Frame not found: $1"
+			return 1
+		fi 
+		if [ $count -gt 1 ]; then 
+			echo "ERROR:  Multiple Frame's with same name $1"
+			return 2
+		fi
+	else
+		unset input
+		if [ "`lssyscfg -r sys -F name | wc -l`" -eq 1 ]; then
+			frame="`lssyscfg -r sys -F name`"
+			if [ "$2" = "confirm" ]; then
+				printf "No frame specified, defaulting to \"$frame\".  Continue? (Y/N):  "
+				while ! echo $input | egrep -q "^y$|^Y$|^n$|^N$"; do
+					read input
+				done
+				if echo $input | egrep -q "^y$|^Y$"; then return 0; fi
+				if echo $input | egrep -q "^n$|^N$"; then return 1; fi
+			fi
+		else
+			echo "Select frame: "
+			count=0
+			unset framearray
+			while read system; do
+				count=$((count +1))
+				printf "%5s.  $system\n" $count
+				framearray[$count]="$system"
+			done < <(lssyscfg -r sys -F "name" | sort)
+			
+			echo
+			while [ -z "${framearray[$input]}" ]; do
+				printf "Enter frame number (1-$count, \"q\" to quit): ";
+				read input
+				if [ "$input" = "q" -o "$input" = "Q" ]; then return 1; fi
+			done
+			frame="${framearray[$input]}"
+		fi
+		checkframe "$frame" || return 2
+	fi
+}
+
+lparclone () {
+	lpar="$1"
+	checklpar all "$lpar" && (
+		system="`lparframelookup \"$lpar\"`"; 
+		printf "##Command to create $lpar ($system)\nmksyscfg -r lpar -m \"$system\" -i \""; lssyscfg -r prof -m "$system" --filter "lpar_names=\"$lpar\",profile_names=`lssyscfg -r lpar -m "$system" --filter "lpar_names=$lpar" -F default_profile`" | sed  -e 's/\(^\|,\)name=/profile_name=/' -e 's/,lpar_name=/,name=/' -e 's/"/\\"/g' -e 's/$/"/' -e 's/,electronic_err_reporting=null//' -e 's/,shared_proc_pool_id=[0-9]*//'; 
+	)
+}
+
+runandecho () {
+	printf "Running:  "; echo "$*" | sed 's/eval//'
+	if [ "$EZHDEBUG" == "TRUE" ]; then
+		echo "#EZHDEBUG=TRUE, command not run"
+	else
+		$*
+#		"$@"
+	fi
+}
+
+lparframelookup () { 
+	while read system; do 
+		while read lpar; do 
+			if [ "$lpar" = "$*" ]; then 
+				echo $system; 
+			fi 
+		done < <(lssyscfg -m "$system" -r lpar -F name)
+	done < <(lssyscfg -r sys -F "name,state" | egrep "Standby|Operating" | cut -d, -f 1) | tail -n 1
+}
+
+lparcurrentprofile () { lssyscfg -r lpar -m "`lparframelookup $*`" --filter lpar_names="$*" -F curr_profile; } 
+
+lpardefaultprofile () { lssyscfg -r lpar -m "`lparframelookup $*`" --filter lpar_names="$*" -F default_profile; } 
+
+lparconsole () { lpar="$1"; checklpar all "$lpar" && ( echo "Type ~. to exit console"; runandecho eval mkvterm -m \"`lparframelookup $lpar`\" -p \"$lpar\"; ) }
+
+lparconsoleclose () { lpar="$1"; checklpar all "$lpar" && runandecho eval rmvterm -m \"`lparframelookup $lpar`\" -p \"$lpar\"; }
+
+dlparmem () {
+	lpar="$1"
+	checklpar on "$lpar" && (
+		if [ -n "$2" ]; then
+			new_mem="$2"
+		else
+			prompt "Enter new memory amount followed by "M" for MB or "G" for GB" new_mem
+		fi
+		cur_mem=$(lshwres -r mem -m "`lparframelookup $lpar`" --level lpar -F curr_mem --filter "lpar_names=$lpar")
+
+		if ! echo $new_mem | egrep -q "^[+-]*[0-9][0-9]*[MGmg]$"; then 
+			echo "Error, eezh can't recognize new memory amount"
+			echo "Specify number followed by M for megabytes, or G for gigabytes"
+			echo "For example,  512m, or 16g"
+			return 2	
+		fi
+
+		if echo $new_mem | egrep -q "^\+"; then memadd="true"; new_mem=`echo $new_mem | sed 's/+//'`; fi
+		if echo $new_mem | egrep -q "^-";  then memsub="true"; new_mem=`echo $new_mem | sed 's/-//'`; fi
+
+		if echo $new_mem | egrep -qi "^[0-9]*g$"; then new_mem=`echo $new_mem | sed 's/[gG]//'`; new_mem=$(( new_mem * 1024)); fi
+		if echo $new_mem | egrep -qi "^[0-9]*m$"; then new_mem=`echo $new_mem | sed 's/[mM]//'`; fi
+
+		if [ "$memadd" == "true" ]; then new_mem=$(( new_mem + cur_mem )); fi
+		if [ "$memsub" == "true" ]; then new_mem=$(( cur_mem - new_mem )); fi
+
+		if [ "$new_mem" -eq "$cur_mem" ]; then
+			echo "$lpar already set to $new_mem MB.  No changes made.  "
+			return 2
+		fi
+
+		if [ "$new_mem" -lt "$cur_mem" ]; then
+			diff=$(( $cur_mem - $new_mem ))
+			runandecho eval chhwres -r mem -m \"`lparframelookup $lpar`\" -o r -p \"$lpar\" -q $diff -w 5
+		else
+			diff=$(( $new_mem - $cur_mem ))
+			runandecho eval chhwres -r mem -m \"`lparframelookup $lpar`\" -o a -p \"$lpar\" -q $diff -w 5
+		fi
+	)
+}
+
+internal_dlparslotadd () {
+	if [ -z "$rsubtype" ]; then echo "Don't call this function directly.. "; return 2; fi
+	lpar="$1"
+	checklpar all "$lpar" && (
+		slot_num="$2"
+		remote_lpar="$3"
+		remote_slot="$4"
+		if [ -z "$slot_num"    ]; then prompt "Enter Slot Number               " slot_num; fi
+		if [ -z "$remote_lpar" ]; then prompt "Enter Remote Client Partition   " remote_lpar; fi
+		if [ -z "$remote_slot" ]; then prompt "Enter Remote Client Slot Number " remote_slot; fi
+
+		type=$(lssyscfg -r lpar -m "`lparframelookup $lpar`" -F lpar_env --filter lpar_names="$lpar")
+		if [ "$type" == "vioserver" ]; then type=server; else type=client; fi
+
+		runandecho "eval chhwres -r virtualio -m \"`lparframelookup $lpar`\" -o a -p \"$lpar\" --rsubtype $rsubtype -s $slot_num -a \"adapter_type=$type,remote_lpar_name=\"$remote_lpar\",remote_slot_num=$remote_slot\""
+		rsubtype=""
+	)
+}
+
+internal_dlparslotrm () {
+	if [ -z "$rsubtype" ]; then echo "Don't call this function directly.. "; return 2; fi
+	lpar="$1"
+	checklpar all "$lpar" && (
+		slot_num="$2"
+		if [ -z "$slot_num"    ]; then prompt "Enter Slot Number to remove     " slot_num; fi
+		runandecho "eval chhwres -r virtualio -m \"`lparframelookup $lpar`\" -o r -p \"$lpar\" --rsubtype $rsubtype -s $slot_num"
+		rsubtype=""
+	)
+}
+
+dlparvscsiadd () { rsubtype=scsi; internal_dlparslotadd "$1" "$2" "$3" "$4";  }
+dlparfcadd    () { rsubtype=fc;   internal_dlparslotadd "$1" "$2" "$3" "$4";  }
+dlparvscsirm  () { rsubtype=scsi; internal_dlparslotrm  "$1" "$2"; }
+dlparfcrm     () { rsubtype=fc;   internal_dlparslotrm  "$1" "$2"; }
+
+dlparcpu () {
+	lpar="$1"
+	checklpar on "$lpar" && (
+		if [ -n "$2" ]; then
+			new_cpu="$2"
+		else
+			echo "Enter new CPU amount.  Optionally prefix with + or - "
+			prompt "to add/remove from current ammount                   " new_cpu
+		fi
+
+		if ! echo $new_cpu | egrep -q "^[+-]*[0-9.]+$"; then
+			echo "Error, eezh can't recognize new CPU amount"
+			echo "Specify absolute CPU amount, or prefix with +/- to add/remove from current amount"
+			echo "For example \"1.5\" to set to 1.5 CPU's"
+			echo "For example \"+0.5\" to add 0.5 CPU's to current amount"
+			echo "For example \"-2.5\" to take away 2.5 CPU's from current amount"
+			return 2	
+		fi
+
+		cur_cpu=$(lshwres -r proc -m "`lparframelookup $lpar`" --level lpar -F curr_proc_units --filter "lpar_names=$lpar")
+
+		#Note: For anyone trying to read this code, I had to get creative and think outside the box
+		#to handle the floating point math needed for this because the HMC restricted shell doesn't
+		#provide any utilities that can do floating point math (bc, awk, etc.).  
+
+		if echo $new_cpu | egrep -q "^\+"; then cpuadd="true"; new_cpu=`echo $new_cpu | sed 's/+//'`; fi
+		if echo $new_cpu | egrep -q "^-";  then cpusub="true"; new_cpu=`echo $new_cpu | sed 's/-//'`; fi
+
+		cur_cpu=`printf "%.2f" $cur_cpu | sed 's/\.//g' | sed 's/^0*//'`
+		new_cpu=`printf "%.2f" $new_cpu | sed 's/\.//g' | sed 's/^0*//'`
+
+		if [ "$cpuadd" == "true" ]; then new_cpu=$(( new_cpu + cur_cpu )); fi
+		if [ "$cpusub" == "true" ]; then new_cpu=$(( cur_cpu - new_cpu )); fi
+
+		if [ "$new_cpu" == "$cur_cpu" ]; then
+			echo "$lpar already set to this amount of CPU.  No changes made.  "
+			return 2
+		fi
+
+		if [ $new_cpu -lt $cur_cpu ]; then
+			diff=$(( cur_cpu - new_cpu ))
+			diff=`printf "%.3d" $diff | sed 's/..$/.&/'`
+			runandecho eval chhwres -r proc -m \"`lparframelookup $lpar`\" -o r -p \"$lpar\" --procunits $diff -w 5
+		else
+			diff=$(( new_cpu - cur_cpu ))
+			diff=`printf "%.3d" $diff | sed 's/..$/.&/'`
+			runandecho eval chhwres -r proc -m \"`lparframelookup $lpar`\" -o a -p \"$lpar\" --procunits $diff -w 5
+		fi
+	)
+}
+
+dlparvcpu () {
+	lpar="$1"
+	checklpar on "$lpar" && (
+		if [ -n "$2" ]; then
+			new_vcpu="$2"
+		else
+			prompt "Enter new Virtual CPU amount" new_vcpu
+		fi
+
+		if ! echo $new_vcpu | egrep -q "^[+-]*[0-9]+$"; then
+			echo "Error, eezh can't recognize new Virtual CPU amount"
+			echo "Specify absolute Virtual CPU amount, or prefix with +/- to add/remove from current amount"
+			echo "For example \"2\" to set to 2 Virtual CPU's"
+			echo "For example \"+1\" to add 1 Virtual CPU to current amount"
+			echo "For example \"-2\" to take away 2 Virtual CPU's from current amount"
+			return 2	
+		fi
+
+		cur_vcpu=$(lshwres -r proc -m "`lparframelookup $lpar`" --level lpar -F curr_procs --filter "lpar_names=$lpar")
+
+		if echo $new_vcpu | egrep -q "^\+"; then new_vcpu=`echo $new_vcpu | sed 's/+//'`; new_vcpu=$(( new_vcpu + cur_vcpu )); fi
+		if echo $new_vcpu | egrep -q "^-";  then new_vcpu=`echo $new_vcpu | sed 's/-//'`; new_vcpu=$(( cur_vcpu - new_vcpu )); fi
+
+		if [ "$new_vcpu" == "$cur_vcpu" ]; then
+			echo "$lpar already set to this amount of Virtual CPU.  No changes made.  "
+			return 2
+		fi
+
+		if [ $new_vcpu -lt $cur_vcpu ]; then
+			diff=$(( cur_vcpu - new_vcpu ))
+			runandecho eval chhwres -r proc -m \"`lparframelookup $lpar`\" -o r -p \"$lpar\" --procs $diff -w 5
+		else
+			diff=$(( new_vcpu - cur_vcpu ))
+			runandecho eval chhwres -r proc -m \"`lparframelookup $lpar`\" -o a -p \"$lpar\" --procs $diff -w 5
+		fi
+	)
+}
+
+lparinfo () { 
+	lpar="$1"
+	checklpar all "$lpar" && (
+		echo $lpar
+		echo "  On frame `lparframelookup $lpar`"
+		echo "  Current State:  `lssyscfg -r lpar -m "\`lparframelookup $lpar\`" -F state --filter lpar_names="$lpar";` "
+		echo "  OS version: `lssyscfg -r lpar -m "\`lparframelookup $lpar\`" --filter lpar_names="$lpar" -F os_version`"
+		echo -e "\n  Profile properties:  "
+		echo `lssyscfg -r prof -m "\`lparframelookup $lpar\`" --filter lpar_names="$lpar"`
+		echo -e "\n  LPAR properties: "
+		echo `lssyscfg -r lpar -m "\`lparframelookup $lpar\`" --filter lpar_names="$lpar"` 
+	)
+}
+
+lparls        () { lparlsfield="state"          ; internal_lparls; }
+lparlsos      () { lparlsfield="os_version"     ; internal_lparls; }
+lparlscurprof () { lparlsfield="curr_profile"   ; internal_lparls; }
+lparlsdefprof () { lparlsfield="default_profile"; internal_lparls; }
+lparlsmem     () { lparlsfield="curr_mem";        lparlshw=mem;  internal_lparlshw; }
+lparlscpu     () { lparlsfield="curr_proc_units"; lparlshw=proc; internal_lparlshw; }
+lparlsvcpu    () { lparlsfield="curr_procs";      lparlshw=proc; internal_lparlshw; }
+
+internal_lparlshw () {
+	while read system; do
+                printf "%-20s %-20s\n" "$system" "`lssyscfg -r sys -F "name,state" | grep "^$system," | cut -d, -f 2`"
+                while read lpar; do
+                        if [ $lparlsfield == "curr_proc_units" -a "`lshwres -r $lparlshw --level lpar -m "$system" -F curr_proc_mode --filter "lpar_names=\"$lpar\""`" == "ded" ]; then 
+			   attribute="$(lshwres -r $lparlshw --level lpar -m "$system" -F curr_procs --filter "lpar_names=\"$lpar\"") dedicated"
+                        else
+			attribute=$(lshwres -r $lparlshw --level lpar -m "$system" -F $lparlsfield --filter "lpar_names=\"$lpar\"")
+                        fi
+                        printf "   %-20s %-20s\n" "$lpar" "$attribute"
+		done < <(lssyscfg -m "$system" -r lpar -F name | sort)
+	done < <(lssyscfg -r sys -F "name,state" | egrep "Standby|Operating" | cut -d, -f 1 | sort)
+	lparlsfield=""
+	lparlshw=""
+}
+
+framelslpar () { frame="$1"; checkframe "$frame" && runandecho eval lssyscfg -r lpar  -m \"$frame\" -F name | body sort; }
+	
+internal_lparls () {
+	while read system; do
+                printf "%-20s %-20s\n" "$system" "`lssyscfg -r sys -F "name,state" | grep "^$system," | cut -d, -f 2`"
+                lssyscfg -m "$system" -r lpar -F name | sort | while read lpar; do
+                        printf "   %-20s %-20s\n" "$lpar" "`lssyscfg -r lpar -m \"$system\" -F $lparlsfield --filter lpar_names=\"$lpar\"`"
+                done
+	done < <(lssyscfg -r sys -F "name,state" | egrep "Standby|Operating" | cut -d, -f 1 | sort)
+	lparlsfield=""
+}
+
+lpardelete ()   { lpar="$1"; checklpar off "$lpar" && runandecho eval rmsyscfg -r lpar -m \"`lparframelookup $lpar`\" -n \"$lpar\"; }
+
+lparpoweron ()   { 
+	lpar=$1;
+	checklpar off "$lpar" && (
+		if [ -n "$2" ]; then
+			profile="$2"
+		else
+			profile="`lpardefaultprofile $lpar`"
+		fi
+		runandecho eval chsysstate -r lpar -o on -f \"$profile\" -m \"`lparframelookup $lpar`\" -n \"$lpar\"; 
+	)
+}
+
+lparpoweronsms ()   { 
+	lpar="$1"
+	checklpar off "$lpar" && (
+		if [ -n "$2" ]; then
+			profile="$2"
+		else
+			profile="`lpardefaultprofile $lpar`"
+		fi
+		runandecho eval chsysstate -r lpar -b sms -o on -f \"$profile\" -m \"`lparframelookup $lpar`\" -n \"$lpar\"; 
+	)
+}
+
+lparrebootos ()   { lpar="$1"; checklpar on "$lpar" && runandecho eval chsysstate -r lpar -o osshutdown --immed --restart -m \"`lparframelookup $lpar`\" -n \"$lpar\"; }
+
+lparreboothard () { lpar="$1"; checklpar on "$lpar" && runandecho eval chsysstate -r lpar -o shutdown --immed --restart -m \"`lparframelookup $lpar`\" -n  \"$lpar\"; }
+
+lparshutdownos ()   { lpar="$1"; checklpar on "$lpar" && runandecho eval chsysstate -r lpar -o osshutdown --immed -m \"`lparframelookup $lpar`\" -n \"$lpar\"; }
+
+lparshutdownhard () { lpar="$1"; checklpar on "$lpar" && runandecho eval chsysstate -r lpar -o shutdown --immed -m \"`lparframelookup $lpar`\" -n \"$lpar\"; }
+
+lparsaveconfig () { lpar="$1"; checklpar all "$lpar" && runandecho eval mksyscfg -r prof -m \"`lparframelookup $lpar`\" -o save -p \"$lpar\" -n \"`lparcurrentprofile $lpar`\" --force; }
+
+lparclearled () { lpar="$1"; checklpar all "$lpar" && runandecho eval chled -m \"`lparframelookup $lpar`\" -r sa -t virtuallpar -o off -p \"$lpar\"; } 
+
+lparledls () { lpar="$1"; checklpar all "$lpar" && runandecho eval lsled -m \"`lparframelookup $lpar`\" -r sa -t virtuallpar --filter \"lpar_names=$lpar\";  }
+
+lparrefcode () { lpar="$1"; checklpar all "$lpar" && runandecho eval lsrefcode -r lpar -m \"`lparframelookup $lpar`\" -F \"lpar_name refcode time_stamp\" --filter \"lpar_names=$lpar\"; }
+
+lparlsrefcode () {
+	echo "LPAR                  refcode     time_stamp"
+        while read system; do
+        	while read lpar; do
+               		IFS_orig="$IFS"
+                       	IFS=","
+			line=$(lsrefcode -r lpar -m "$system" -F "refcode,time_stamp" --filter "lpar_names=$lpar";)
+                       	set -- $line
+                       	printf "%-20s  %-10s  %-10s\n" "$lpar" "$1" "$2"
+               		IFS="$IFS_orig"
+               	done < <(lssyscfg -m "$system" -r lpar -F name | sort)
+       	done < <(lssyscfg -r sys -F "name,state" | egrep "Standby|Operating" | cut -d, -f 1 | sort) 
+}
+
+lsledall () { 
+	echo "Attention LED states: "
+	while read system; do
+		printf "%-23s %-20s\n" "$system" "`lsled -m \"$system\" -r sa -t phys -F state`"
+		while read lpar; do 
+			printf "   %-20s %-20s\n" "$lpar" "`lsled -m \"$system\" -r sa -t virtuallpar --filter \"lpar_names=$lpar\" -F state`"
+		done < <(lssyscfg -m "$system" -r lpar -F name | sort)
+	done < <(lssyscfg -r sys -F "name" | sort)
+}
+
+framelsfirm () { 
+	if [ "`lssyscfg -r sys -F lpar_proc_compat_modes | grep -E 'POWER8|POWER9' | wc -l`" -gt 0 ]; then
+		echo "Frame                EC_Number  IPL_Lev  Act_Lev  Def_Lev  Model/Serial      UAK_Exp"
+		cmd='lslic -m "$system" -F ecnumber,platform_ipl_level,activated_level,deferred_level,mtms,update_access_key_exp_date'
+	else
+		echo "Frame                EC_Number  IPL_Lev  Act_Lev  Def_Lev  Model/Serial"
+		cmd='lslic -m "$system" -F ecnumber,platform_ipl_level,activated_level,deferred_level,mtms'
+	fi
+	while read system; do
+		IFS_orig="$IFS"
+		while read line; do
+			IFS=","
+			set -- $line
+			printf "%-20s %-10s %-8s %-8s %-8s %-10s %11s\n" $system $1 $2 $3 $4 $5 $6
+#		done < <(lslic -m "$system" -F ecnumber,platform_ipl_level,activated_level,deferred_level,mtms,update_access_key_exp_date)
+		done < <(eval $cmd)
+		IFS="$IFS_orig"
+	done < <(lssyscfg -r sys -F "name" | sort)
+}
+
+lparviorun () { 
+	lpar="$1";  
+	checklpar on "$lpar" && (
+		shift; 
+		if [ -z "$1" ]; then prompt "Enter command to run on VIO server   " viocmd; fi
+		param="$* $viocmd"; 
+		viocmd=""
+		runandecho eval viosvrcmd -m \"`lparframelookup $lpar`\" -p \"$lpar\" -c \"$param\"; 
+	)
+}
+
+framepoweron ()  { frame="$1"; checkframe "$frame" "confirm" && runandecho eval chsysstate -m \"$frame\" -r sys -o on;  }
+
+framepoweroff () { frame="$1"; checkframe "$frame" "confirm" && runandecho eval chsysstate -m \"$frame\" -r sys -o off; }
+
+framelsled () { frame="$1"; checkframe "$frame" && runandecho eval lsled -m \"$frame\" -r sa -t phys; }
+
+frameclearled () { frame="$1"; checkframe "$frame" && runandecho eval chled -m \"$frame\" -r sa -t phys -o off; }
+
+framels () { runandecho lssyscfg -r sys -F name | body sort; }
+
+framelsslots() {
+	frame="$1"
+	checkframe "$frame" && (
+	echo "LPAR            Location                       Description"
+	echo "----------------------------------------------------------"
+	while read lpar slot desc; do
+		lpar=`eval echo $lpar`
+		slot=`eval echo $slot`
+		desc=`eval echo $desc`
+		printf "%-15s %-30s %-15s\n" "$lpar" "$slot" "$desc"
+	done < <(lshwres -r io --rsubtype slot -m "$frame" -F "lpar_name,drc_name,description" | sed -e 's/^/"/' -e 's/,/" "/g' -e 's/$/"/')
+	)
+}
+
+sriovlsfirm () {
+        frame="$1"
+        checkframe "$frame" && (
+        echo "Adpt."
+        printf "%-5s %-28s %-13s %-19s %-10s\n" "ID" "Location" "Firmware" "Driver" "Update"
+	echo "---------------------------------------------------------------------------"
+        while read adpt_id phys_loc firm driver update; do
+                adpt_id=`eval echo $adpt_id`
+                phys_loc=`eval echo $phys_loc`
+                firm=`eval echo $firm`
+                driver=`eval echo $driver`
+                update=`eval echo $update | sed -e 's/0/NO/' -e 's/1/YES/'`
+                printf "%3i %-30s %-13s %-21s %-4s\n" "$adpt_id" "  $phys_loc" "$firm" "$driver" "$update"
+        done < <(lslic -t sriov -m "$frame" -F "adapter_id,slot,active_adapter_level,active_adapter_driver_level,update_available" | sort -n | sed -e 's/^/"/' -e 's/,/" "/g' -e 's/$/"/')
+        )
+}
+
+sriovlsadapter () {
+        frame="$1"
+        checkframe "$frame" && (
+        printf "%-58s %-10s %-s\n" "Adpt." "Physical" "Logical"
+        printf "%-5s %-28s %-10s %-12s %-10s %-s\n" "ID" "Location" "Slot" "Mode" "Ports" "Ports(MAX)"
+	echo "--------------------------------------------------------------------------------"
+	while read adpt_id phys_loc slot conf_state phys_ports max_log_ports; do
+		adpt_id=`eval echo $adpt_id`
+		phys_loc=`eval echo $phys_loc`
+		slot=`eval echo $slot`
+		conf_state=`eval echo $conf_state`
+		phys_ports=`eval echo $phys_ports`
+		max_log_ports=`eval echo $max_log_ports`
+		printf "%3i %-30s %-10s %-12s %4s %10s\n" "$adpt_id" "  $phys_loc" "$slot" "$conf_state" "$phys_ports" "$max_log_ports"
+	done < <(lshwres -r sriov --rsubtype adapter -m "$frame" -F "adapter_id,phys_loc,slot_id,config_state,phys_ports,adapter_max_logical_ports" | sort -n | sed -e 's/^/"/' -e 's/,/" "/g' -e 's/$/"/')
+        )
+}
+
+sriovlsphysport () {
+frame="$1"; checkframe "$frame" && runandecho eval lshwres -m  \"$frame\" -r sriov --rsubtype physport --level eth -F --header | grep -v "No results were found." | body sort -n;
+echo
+if [ -n "$frame" ]; then
+runandecho eval lshwres -m \"$frame\" -r sriov --rsubtype physport --level ethc -F --header | grep -v "No results were found." | body sort -n;
+fi
+}
+
+sriovlslogport () {
+echo "Place holder"
+}
+
+framelsevents () { frame="$1"; checkframe "$frame" && runandecho eval lssvcevents -t hardware -m \"$frame\" --filter "status=open" | sed 's/^prob/\nprob/g'; }
+
+frameinfo () {
+	frame="$1"
+	checkframe "$frame" && (
+		runandecho eval lssyscfg -r sys -m \"$frame\"
+		echo -e "\nCPU Info:"
+		runandecho eval lshwres -r proc -m \"$frame\" --level sys
+		echo -e "\nMem Info:"
+		runandecho eval lshwres -r mem  -m \"$frame\" --level sys
+	)
+}
+
+internal_framelsslot() { 
+	frame="$1"; checkframe "$frame" && (
+		echo "Type          LPAR              Slot       Remote_LPAR       Remote_Slot"
+		IFS_orig="$IFS"
+		while read line; do
+			IFS=","
+			set -- $line
+			printf "%-6s adp.   %-16s  %-5s ->   %-16s  %-5s\n" $1 $2 $3 $4 $5
+		done < <(lshwres -r virtualio --rsubtype $rsubtype --level lpar -m "$frame" -F adapter_type,lpar_name,slot_num,remote_lpar_name,remote_slot_num | sort -r)
+		IFS="$IFS_orig"
+		rsubtype=""
+	)
+}
+
+internal_lparlsslot() { 
+	lpar="$1"; checklpar all "$lpar" && (
+		echo "Type          LPAR              Slot       Remote_LPAR       Remote_Slot"
+		IFS_orig="$IFS"
+		while read line; do
+			IFS=","
+			set -- $line
+			printf "%-6s adp.   %-16s  %-5s ->   %-16s  %-5s\n" $1 $2 $3 $4 $5
+		done < <(lshwres -r virtualio --rsubtype $rsubtype --level lpar -m "`lparframelookup $lpar`" -F adapter_type,lpar_name,slot_num,remote_lpar_name,remote_slot_num  --filter "lpar_names=$lpar" | sort -r)
+		IFS="$IFS_orig"
+		rsubtype=""
+	)
+}
+
+framelsvscsi () { rsubtype=scsi; internal_framelsslot "$1"; } 
+framelsfc    () { rsubtype=fc;   internal_framelsslot "$1"; }
+lparvscsils  () { rsubtype=scsi; internal_lparlsslot "$1"; } 
+lparfcls     () { rsubtype=fc;   internal_lparlsslot "$1"; }
+
+hmcrestart () { runandecho hmcshutdown -t now -r; }
+
+hmcversion () { runandecho lshmc -V; }
+
+lsevents () { runandecho lssvcevents -t hardware --filter "status=open" | sed 's/^prob/\nprob/g'; }
+
+closeallevents () { runandecho chsvcevent -o closeall; } 
+
+
+eezh () { 
+	while true; do
+		clear
+		echo
+		echo "  Enhanced EZH version $eezhver. "
+		echo "  Copyright 2020 Matthew Opoka." 
+		echo "  Copyright 2012 Brian Smith." 
+		echo "  Released under GPLv3 license"
+#		echo "  http://ezh.sourceforge.net "; echo 
+		echo
+		echo "  1.  LPAR Related Commands "
+		echo "  2.  DLPAR Related Commands "
+		echo "  3.  Frame Related Commands "
+		echo "  4.  Misc. Commands "
+		echo "  q.  Exit"
+		echo
+		prompt "Enter option [1-4, q to quit] " ezhmenu
+		case "$ezhmenu" in
+			1)
+				ezhlpar
+				;;
+			2)
+				ezhdlpar
+				;;
+			3)
+				ezhframe
+				;;
+			4)
+				ezhmisc
+				;;
+			q|Q)
+				return
+				;;
+		esac
+	done
+}
+
+ezhlpar () {
+	while true; do
+		clear
+		echo "   *****List Info on All LPAR's*****"
+		lparmenu[1]="lparls";            echo " 1.  lparls                               - List State of LPAR's"
+		lparmenu[2]="lparlscpu";         echo " 2.  lparlscpu       3.  lparlsvcpu       - List assigned CPU or Virt CPU"
+		lparmenu[3]="lparlsvcpu";     
+		lparmenu[4]="lparlsmem";         echo " 4.  lparlsmem                            - List assigned memory of LPAR's"
+		lparmenu[5]="lparlsos";          echo " 5.  lparlsos                             - List OS versions of LPAR's"
+		lparmenu[6]="lparlsrefcode";     echo " 6.  lparlsrefcode                        - List LPAR Reference codes"
+		lparmenu[7]="lparlscurprof";     echo " 7.  lparlscurprof   8.  lparlsdefprof    - List Current/Default Profiles"
+		lparmenu[8]="lparlsdefprof";     
+		echo "  *****LPAR Power On/Off, Delete, Clone, and Console*****"
+		lparmenu[9]="lparpoweron"; 
+		lparmenu[10]="lparpoweronsms";   echo " 9.  lparpoweron     10. lparpoweronsms   - Power on, or Power on in to SMS "
+		lparmenu[11]="lparshutdownos"; 
+		lparmenu[12]="lparshutdownhard"; echo " 11. lparshutdownos  12. lparshutdownhard - OS Shutdown or Immed. Shutdown"
+		lparmenu[13]="lparrebootos"; 
+		lparmenu[14]="lparreboothard";   echo " 13. lparrebootos    14. lparreboothard   - OS Reboot or Immed. Reboot"
+		lparmenu[15]="lpardelete";       echo " 15. lpardelete                           - Delete LPAR"
+		lparmenu[16]="lparclone";        echo " 16. lparclone                            - Show CMD to recreate/duplicate LPAR"
+		lparmenu[17]="lparconsole"; 
+		lparmenu[18]="lparconsoleclose"; echo " 17. lparconsole     18. lparconsoleclose - Open/Close Console Window to LPAR"
+		echo "  *****LPAR Info******"
+		lparmenu[19]="lparinfo";         echo " 19. lparinfo                             - Show info on LPAR"
+		lparmenu[20]="lparvscsils";      echo " 20. lparvscsils                          - List LPAR Virt SCSI Adapters"
+		lparmenu[21]="lparfcls";         echo " 21. lparfcls                             - List LPAR Virt Fibre Chan. Adapters"
+		lparmenu[22]="lparrefcode";      echo " 22. lparrefcode                          - Show LPAR reference code "
+		echo "  *****LPAR Misc.*****"
+		lparmenu[23]="lparsaveconfig";   echo " 23. lparsaveconfig                       - Save LPAR Running Conf. to Profile" 
+		lparmenu[24]="lparviorun";       echo " 24. lparviorun                           - Run Command on VIO server" 
+		lparmenu[25]="lparledls"; 
+		lparmenu[26]="lparclearled";     echo " 25. lparledls       26. lparclearled     - List or Clear LPAR Attention LED "
+		
+		prompt "Enter option [1-26, q to quit] " ezhmenu
+
+		if [ "$ezhmenu" == "q" -o "$ezhmenu" == "Q" ]; then return; fi
+		echo "$ezhmenu" | egrep -q "[0-9][0-9]*" && if [ -n "${lparmenu[$ezhmenu]}" ]; then 
+			clear
+			echo "Enhanced EZH: ${lparmenu[$ezhmenu]}"; echo
+			${lparmenu[$ezhmenu]}
+			echo
+			echo "Press Enter"
+			read
+		fi
+
+	done
+}
+
+ezhdlpar () {
+	while true; do
+		clear
+		echo "   *****DLPAR CPU / Virtual CPU / Memory*****"
+		echo "   Note:  When running interactively, specify final amount of CPU desired"
+		echo "          OR prefix with "+" or "-" to add/remove from current amount."
+		echo "          Specify memory with M or G following number for MB/GB (16G, 128M)"
+		echo
+		echo "   Examples: dlparcpu aix1 2.5  - Set aix1 partition to 2.5 entitled CPU's"
+		echo "             dlparvcpu aix1 +1  - Add 1 Virt CPU to aix1's number of Virt CPU's."
+		echo "             dlparmem aix1 16G  - Set aix1 partiton to 16 GB of memory"
+		echo "             dlparmem aix1 +4G  - Add 4 GB to aix1's current amount of memory"
+		dlparmenu[1]="dlparcpu";         echo " 1.  dlparcpu                             - Change Servers Entitled CPU"
+		dlparmenu[2]="dlparvcpu";        echo " 2.  dlparvcpu                            - Change Servers Virtual CPU"
+		dlparmenu[3]="dlparmem";         echo " 3.  dlparmem                             - Change Servers Memory"
+		echo
+		echo "   *****DLPAR Virtual SCSI / Virtual Fibre Channel slots*****"
+		echo "   Note:  To run DLPAR VSCSI/FC add/remove commands below "
+		echo "          interactively, use the following syntax: "
+		echo "            dlparvscsiadd LPAR_TO_ADD_TO  LPAR_SLOT  REMOTE_LPAR  REMOTE_SLOT"
+		echo "            dlparvscsirm  LPAR_TO_DELETE_FROM  LPAR_SLOT_TO_DELETE"
+		dlparmenu[4]="dlparvscsiadd";     echo " 4.  dlparvscsiadd                        - DLPAR in VSCSI adapter"
+		dlparmenu[5]="dlparfcadd";        echo " 5.  dlparfcadd                           - DLPAR in Virt Virtual Fibre adapter"
+		dlparmenu[6]="dlparvscsirm";      echo " 6.  dlparvscsirm                         - DLPAR REMOVE VSCSI adapter"
+		dlparmenu[7]="dlparfcrm";         echo " 7.  dlparfcrm                            - DLPAR REMOVE Virtual Fibre adapter"
+		echo	
+		prompt "Enter option [1-7, q to quit] " ezhmenu
+
+		if [ "$ezhmenu" == "q" -o "$ezhmenu" == "Q" ]; then return; fi
+		echo "$ezhmenu" | egrep -q "[0-9][0-9]*" && if [ -n "${dlparmenu[$ezhmenu]}" ]; then 
+			clear
+			echo "Enhanced EZH:  ${dlparmenu[$ezhmenu]}"; echo
+			${dlparmenu[$ezhmenu]}
+			echo
+			echo "Press Enter"
+			read
+		fi
+	done
+}
+
+ezhframe () {
+	while true; do
+		clear
+		echo "  *****Frame Info*****"
+		framemenu[1]="framels";          echo "  1. framels                             - List Frames"
+		framemenu[2]="frameinfo";        echo "  2. frameinfo                           - Show frame info"
+		framemenu[3]="framelsfirm";      echo "  3. framelsfirm                         - Show all frames firmware levels"
+		framemenu[4]="framelsevents";    echo "  4. framelsevents                       - Show frames servicable events"
+		framemenu[5]="framelsvscsi";     echo "  5. framelsvscsi                        - Show frames VSCSI adapters"
+		framemenu[6]="framelsfc";        echo "  6. framelsfc                           - Show frames Virt Fibre Channel adap."
+		framemenu[7]="framelsslots";     echo "  7. framelsslots                        - Show frames adapter slots"
+		framemenu[8]="framelslpar";      echo "  8. framelslpar                         - Show LPAR's on frame"
+                echo
+		echo "  *****SRIOV Frame Info*****"
+		framemenu[9]="sriovlsfirm";      echo "  9. sriovlsfirm                         - Show SRIOV firmware levels on frame"
+		framemenu[10]="sriovlsadapter";  echo " 10. sriovlsadpter                       - Show SRIOV adapters  on frame"
+		framemenu[11]="sriovlsphysport"; echo " 11. sriovlsphysport                     - Show SRIOV physical ports on frame"
+		framemenu[12]="sriovlslogport";  echo " 12. sriovlslogport                      - Show SRIOV logical ports on frame"
+                echo
+                echo "  *****Frame Power On / Power Off*****"
+                framemenu[13]="framepoweron";    echo " 13. framepoweron                        - Power on a frame"
+                framemenu[14]="framepoweroff";   echo " 14. framepoweroff                       - Power OFF a frame"
+                echo
+                echo "  *****Frame Attention LED*****"
+                framemenu[15]="framelsled";      echo " 15. framelsled                          - Show frames attention LED status"
+                framemenu[16]="frameclearled";   echo " 16. frameclearled                       - Clear frames attention LED"
+                framemenu[17]="lsledall";        echo " 17. lsledall                            - Show status of all attention LED's"
+		echo
+		prompt "Enter option [1-17, q to quit] " ezhmenu
+
+		if [ "$ezhmenu" == "q" -o "$ezhmenu" == "Q" ]; then return; fi
+		echo "$ezhmenu" | egrep -q "[0-9][0-9]*" && if [ -n "${framemenu[$ezhmenu]}" ]; then 
+			clear
+			echo "Enhanced EZH:  ${framemenu[$ezhmenu]}"; echo
+			${framemenu[$ezhmenu]}
+			echo
+			echo "Press Enter"
+			read
+		fi
+	done
+}
+
+ezhmisc () {
+	while true; do
+		clear
+		echo "  *****Misc. Commands*****"
+		miscmenu[1]="df";              echo " 1.  df                             - Show HMC disk usage"
+		miscmenu[2]="free";            echo " 2.  free                           - Show HMC memory usage"
+		miscmenu[3]="ps";              echo " 3.  ps                             - Show HMC running processes"
+		miscmenu[4]="uptime";          echo " 4.  uptime                         - Show HMC uptime"
+		miscmenu[5]="passwd";          echo " 5.  passwd                         - Change your password" 
+		miscmenu[6]="lsuser";          echo " 6.  lsuser                         - List HMC users"
+		miscmenu[7]="lsevents";        echo " 7.  lsevents                       - List all open serviceable events"
+		miscmenu[8]="closeallevents";  echo " 8.  closeallevents                 - Close all open serviceable events"
+		miscmenu[9]="lsledall";        echo " 9.  lsledall                       - Show status of all attention LED's"
+		miscmenu[10]="hmcrestart";     echo " 10. hmcrestart                     - Reboot this HMC now"
+		miscmenu[11]="hmcversion";     echo " 11. hmcversion                     - Show HMC version"
+		echo
+		prompt "Enter option [1-11, q to quit] " ezhmenu
+
+		if [ "$ezhmenu" == "q" -o "$ezhmenu" == "Q" ]; then return; fi
+		echo "$ezhmenu" | egrep -q "[0-9][0-9]*" && if [ -n "${miscmenu[$ezhmenu]}" ]; then 
+			clear
+			echo "Enhanced EZH:  ${miscmenu[$ezhmenu]}"; echo
+			${miscmenu[$ezhmenu]}
+			echo
+			echo "Press Enter"
+			read
+		fi
+	done
+}
+
