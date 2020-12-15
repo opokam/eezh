@@ -16,6 +16,10 @@ SSH to the HMC and login as your account.   Then type "source eezh".   You will 
 
 
 ## Change Log
+### Version 2.1 (2020-12-15)
+- sriovlslogport works now.  Which fields should we use for sriovlsphysport and sriovlslogport?
+ - Please send feedback and suggestions; contact email below.
+ 
 ### Version 2.0 (2020-09-29)
 - Changed name from ezh to eezh; Enhanced EZH.
 - Enhancements:
