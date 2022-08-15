@@ -185,6 +185,16 @@ lparclone () {
 	)
 }
 
+backuplpars () {
+	while read system; do 
+		printf "##server $system\n"
+		while read lpar; do 
+			printf "##Command to create $lpar ($system)\nmksyscfg -r lpar -m \"$system\" -i \""; lssyscfg -r prof -m "$system" --filter "lpar_names=\"$lpar\",profile_names=`lssyscfg -r lpar -m "$system" --filter "lpar_names=$lpar" -F default_profile`" | sed  -e 's/\(^\|,\)name=/profile_name=/' -e 's/,lpar_name=/,name=/' -e 's/"/\\"/g' -e 's/$/"/' -e 's/,electronic_err_reporting=null//' -e 's/,shared_proc_pool_id=[0-9]*//'; 
+		done < <(lssyscfg -m "$system" -r lpar -F name)
+		printf "\n"
+	done < <(lssyscfg -r sys -F "name,state" | egrep "Standby|Operating" | cut -d, -f 1)
+}
+
 runandecho () {
 	printf "Running:  "; echo "$*" | sed 's/eval//'
 	if [ "$EZHDEBUG" == "TRUE" ]; then
