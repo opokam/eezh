@@ -17,7 +17,7 @@ SSH to the HMC and login as your account.   Then type "source eezh".   You will 
 
 ## Change Log
 ### Version 2.3 (2024-01-01)
-- Removed sed to work with newer HMC code which removed sed due to "secuirty fix".
+- Removed sed to work with newer HMC code which removed sed due to "security fix".
 - Thank you, Esa Kärkkäinen.
  - Please send feedback and suggestions; contact email below.
 
